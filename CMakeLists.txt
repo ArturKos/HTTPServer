@@ -32,9 +32,10 @@ set(HTTP_SERVER_COMPILE_OPTIONS
     -Wdouble-promotion
     -Wnull-dereference
     -Wwrite-strings
-    -D_POSIX_C_SOURCE=200809L
-    -D_DEFAULT_SOURCE
+    -D_GNU_SOURCE
 )
+
+find_package(Threads REQUIRED)
 
 add_library(http_server_lib STATIC
     src/status_codes.c
@@ -47,6 +48,7 @@ add_library(http_server_lib STATIC
     src/file_handler.c
     src/cgi_handler.c
     src/php_handler.c
+    src/thread_pool.c
     src/server.c
 )
 
@@ -55,6 +57,7 @@ target_include_directories(http_server_lib
 )
 
 target_compile_options(http_server_lib PRIVATE ${HTTP_SERVER_COMPILE_OPTIONS})
+target_link_libraries(http_server_lib PUBLIC Threads::Threads)
 
 add_executable(httpserver src/main.c)
 target_link_libraries(httpserver PRIVATE http_server_lib)

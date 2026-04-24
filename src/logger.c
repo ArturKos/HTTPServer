@@ -1,12 +1,14 @@
 #include "http_server/logger.h"
 
+#include <pthread.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
 
-static char g_log_file_path[512] = "httpserver.log";
+static char            g_log_file_path[512] = "httpserver.log";
+static pthread_mutex_t g_log_file_mutex     = PTHREAD_MUTEX_INITIALIZER;
 
 static void format_timestamp(char* timestamp_buffer, size_t timestamp_buffer_size)
 {
@@ -29,19 +31,22 @@ bool logger_initialize(const char* log_file_path)
     if (path_length + 1 > sizeof(g_log_file_path)) {
         return false;
     }
+    pthread_mutex_lock(&g_log_file_mutex);
     memcpy(g_log_file_path, log_file_path, path_length + 1);
+    pthread_mutex_unlock(&g_log_file_mutex);
     return true;
 }
 
 static void append_line_to_log_file(const char* log_line)
 {
+    pthread_mutex_lock(&g_log_file_mutex);
     FILE* log_file_stream = fopen(g_log_file_path, "a");
-    if (log_file_stream == NULL) {
-        return;
+    if (log_file_stream != NULL) {
+        fputs(log_line, log_file_stream);
+        fputc('\n', log_file_stream);
+        fclose(log_file_stream);
     }
-    fputs(log_line, log_file_stream);
-    fputc('\n', log_file_stream);
-    fclose(log_file_stream);
+    pthread_mutex_unlock(&g_log_file_mutex);
 }
 
 void logger_log_request(const char* client_ip,

@@ -18,6 +18,7 @@ add_executable(http_server_tests
     test_request.cpp
     test_status_codes.cpp
     test_response.cpp
+    test_thread_pool.cpp
 )
 
 target_link_libraries(http_server_tests

@@ -9,39 +9,49 @@
 #include "http_server/response.h"
 #include "http_server/socket_utils.h"
 #include "http_server/status_codes.h"
+#include "http_server/thread_pool.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <netinet/in.h>
+#include <pthread.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
 #include <sys/socket.h>
 #include <sys/types.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
-#define CONNECTION_BACKLOG         64
-#define REQUEST_READ_BUFFER_SIZE   8192
-#define RESOLVED_PATH_BUFFER_SIZE  1024
+#define CONNECTION_BACKLOG          512
+#define REQUEST_READ_BUFFER_SIZE    8192
+#define RESOLVED_PATH_BUFFER_SIZE   1024
+#define DEFAULT_WORKER_THREAD_COUNT 8
+#define DEFAULT_TASK_QUEUE_CAPACITY 1024
+#define EPOLL_EVENT_BATCH_SIZE      32
 
 static volatile sig_atomic_t g_shutdown_requested = 0;
+static int                   g_shutdown_eventfd   = -1;
+
+typedef struct ConnectionTask {
+    int                client_socket;
+    struct sockaddr_in client_address;
+    const ServerConfig* server_config;
+} ConnectionTask;
 
 static void handle_shutdown_signal(int signal_number)
 {
     (void)signal_number;
     g_shutdown_requested = 1;
-}
-
-static void reap_child_processes(int signal_number)
-{
-    (void)signal_number;
-    const int saved_errno = errno;
-    while (waitpid(-1, NULL, WNOHANG) > 0) {
-        /* reap */
+    if (g_shutdown_eventfd >= 0) {
+        const uint64_t wake_value = 1;
+        ssize_t ignored = write(g_shutdown_eventfd, &wake_value, sizeof(wake_value));
+        (void)ignored;
     }
-    errno = saved_errno;
 }
 
 static bool install_signal_handlers(void)
@@ -52,13 +62,6 @@ static bool install_signal_handlers(void)
     sigemptyset(&shutdown_action.sa_mask);
     if (sigaction(SIGINT, &shutdown_action, NULL) < 0) return false;
     if (sigaction(SIGTERM, &shutdown_action, NULL) < 0) return false;
-
-    struct sigaction child_action;
-    memset(&child_action, 0, sizeof(child_action));
-    child_action.sa_handler = reap_child_processes;
-    sigemptyset(&child_action.sa_mask);
-    child_action.sa_flags = SA_RESTART | SA_NOCLDSTOP;
-    if (sigaction(SIGCHLD, &child_action, NULL) < 0) return false;
 
     signal(SIGPIPE, SIG_IGN);
     return true;
@@ -121,7 +124,7 @@ static void handle_client_connection(int client_socket,
     HttpRequest parsed_request;
     if (!http_request_parse(request_buffer, (size_t)bytes_received, &parsed_request)) {
         response_write_error(client_socket, HTTP_STATUS_BAD_REQUEST);
-        logger_log_request(client_ip_string, (int)getpid(),
+        logger_log_request(client_ip_string, (int)pthread_self(),
                            HTTP_STATUS_BAD_REQUEST, "-");
         return;
     }
@@ -135,8 +138,58 @@ static void handle_client_connection(int client_socket,
     const int response_status = dispatch_request(client_socket, &parsed_request,
                                                  config, client_ip_string,
                                                  body_start, body_size);
-    logger_log_request(client_ip_string, (int)getpid(),
+    logger_log_request(client_ip_string, (int)pthread_self(),
                        response_status, parsed_request.path);
+}
+
+static void connection_task_runner(void* opaque_task_argument)
+{
+    ConnectionTask* connection_task = (ConnectionTask*)opaque_task_argument;
+    handle_client_connection(connection_task->client_socket,
+                             &connection_task->client_address,
+                             connection_task->server_config);
+    close(connection_task->client_socket);
+    free(connection_task);
+}
+
+static bool accept_pending_connections(int listening_socket,
+                                       const ServerConfig* server_config,
+                                       ThreadPool* worker_pool)
+{
+    for (;;) {
+        struct sockaddr_in client_address;
+        socklen_t client_address_length = sizeof(client_address);
+        int client_socket = accept4(listening_socket,
+                                    (struct sockaddr*)&client_address,
+                                    &client_address_length,
+                                    SOCK_CLOEXEC);
+        if (client_socket < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) return true;
+            if (errno == EINTR) continue;
+            return false;
+        }
+
+        ConnectionTask* connection_task = (ConnectionTask*)malloc(sizeof(ConnectionTask));
+        if (connection_task == NULL) {
+            close(client_socket);
+            continue;
+        }
+        connection_task->client_socket  = client_socket;
+        connection_task->client_address = client_address;
+        connection_task->server_config  = server_config;
+
+        if (!thread_pool_submit_task(worker_pool, connection_task_runner, connection_task)) {
+            close(client_socket);
+            free(connection_task);
+        }
+    }
+}
+
+static int set_socket_nonblocking(int socket_fd)
+{
+    int current_flags = fcntl(socket_fd, F_GETFL, 0);
+    if (current_flags < 0) return -1;
+    return fcntl(socket_fd, F_SETFL, current_flags | O_NONBLOCK);
 }
 
 int server_run(const ServerConfig* server_config)
@@ -162,40 +215,77 @@ int server_run(const ServerConfig* server_config)
                 server_config->listen_port, strerror(errno));
         return EXIT_FAILURE;
     }
-
-    fprintf(stdout, "Server listening on port %u, document root: %s\n",
-            server_config->listen_port, server_config->document_root);
-
-    while (!g_shutdown_requested) {
-        struct sockaddr_in client_address;
-        socklen_t client_address_length = sizeof(client_address);
-        int client_socket = accept(listening_socket,
-                                   (struct sockaddr*)&client_address,
-                                   &client_address_length);
-        if (client_socket < 0) {
-            if (errno == EINTR) continue;
-            fprintf(stderr, "accept() failed: %s\n", strerror(errno));
-            continue;
-        }
-
-        pid_t child_process_id = fork();
-        if (child_process_id < 0) {
-            fprintf(stderr, "fork() failed: %s\n", strerror(errno));
-            close(client_socket);
-            continue;
-        }
-
-        if (child_process_id == 0) {
-            close(listening_socket);
-            handle_client_connection(client_socket, &client_address, server_config);
-            close(client_socket);
-            _exit(EXIT_SUCCESS);
-        }
-
-        close(client_socket);
+    if (set_socket_nonblocking(listening_socket) < 0) {
+        fprintf(stderr, "Failed to set listening socket non-blocking: %s\n", strerror(errno));
+        close(listening_socket);
+        return EXIT_FAILURE;
     }
 
+    g_shutdown_eventfd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (g_shutdown_eventfd < 0) {
+        fprintf(stderr, "Failed to create shutdown eventfd: %s\n", strerror(errno));
+        close(listening_socket);
+        return EXIT_FAILURE;
+    }
+
+    int epoll_descriptor = epoll_create1(EPOLL_CLOEXEC);
+    if (epoll_descriptor < 0) {
+        fprintf(stderr, "epoll_create1 failed: %s\n", strerror(errno));
+        close(listening_socket);
+        close(g_shutdown_eventfd);
+        return EXIT_FAILURE;
+    }
+
+    struct epoll_event listening_event;
+    listening_event.events  = EPOLLIN;
+    listening_event.data.fd = listening_socket;
+    epoll_ctl(epoll_descriptor, EPOLL_CTL_ADD, listening_socket, &listening_event);
+
+    struct epoll_event shutdown_event;
+    shutdown_event.events  = EPOLLIN;
+    shutdown_event.data.fd = g_shutdown_eventfd;
+    epoll_ctl(epoll_descriptor, EPOLL_CTL_ADD, g_shutdown_eventfd, &shutdown_event);
+
+    ThreadPool* worker_pool = thread_pool_create(DEFAULT_WORKER_THREAD_COUNT,
+                                                 DEFAULT_TASK_QUEUE_CAPACITY);
+    if (worker_pool == NULL) {
+        fprintf(stderr, "Failed to create thread pool\n");
+        close(epoll_descriptor);
+        close(listening_socket);
+        close(g_shutdown_eventfd);
+        return EXIT_FAILURE;
+    }
+
+    fprintf(stdout,
+            "Server listening on port %u, document root: %s, workers: %d\n",
+            server_config->listen_port,
+            server_config->document_root,
+            DEFAULT_WORKER_THREAD_COUNT);
+
+    struct epoll_event ready_events[EPOLL_EVENT_BATCH_SIZE];
+    while (!g_shutdown_requested) {
+        int ready_event_count = epoll_wait(epoll_descriptor, ready_events,
+                                           EPOLL_EVENT_BATCH_SIZE, -1);
+        if (ready_event_count < 0) {
+            if (errno == EINTR) continue;
+            fprintf(stderr, "epoll_wait failed: %s\n", strerror(errno));
+            break;
+        }
+
+        for (int event_index = 0; event_index < ready_event_count; ++event_index) {
+            const int triggered_fd = ready_events[event_index].data.fd;
+            if (triggered_fd == listening_socket) {
+                accept_pending_connections(listening_socket, server_config, worker_pool);
+            } else if (triggered_fd == g_shutdown_eventfd) {
+                g_shutdown_requested = 1;
+            }
+        }
+    }
+
+    thread_pool_shutdown_and_destroy(worker_pool);
+    close(epoll_descriptor);
     close(listening_socket);
+    close(g_shutdown_eventfd);
     fprintf(stdout, "Server shut down gracefully\n");
     return EXIT_SUCCESS;
 }
