@@ -231,7 +231,12 @@ int server_run(const ServerConfig* server_config)
         return EXIT_FAILURE;
     }
 
-    if (!logger_initialize(server_config->log_file_path)) {
+    const bool logger_initialised = server_config->use_syslog_backend
+        ? logger_initialize_syslog("httpserver")
+        : logger_initialize_file(server_config->log_file_path,
+                                 server_config->log_max_file_size_bytes,
+                                 server_config->log_max_rotated_files);
+    if (!logger_initialised) {
         fprintf(stderr, "Failed to initialise logger\n");
         return EXIT_FAILURE;
     }
@@ -314,6 +319,7 @@ int server_run(const ServerConfig* server_config)
     close(epoll_descriptor);
     close(listening_socket);
     close(g_shutdown_eventfd);
+    logger_shutdown();
     fprintf(stdout, "Server shut down gracefully\n");
     return EXIT_SUCCESS;
 }

@@ -1,6 +1,8 @@
 #ifndef HTTP_SERVER_SERVER_H
 #define HTTP_SERVER_SERVER_H
 
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -19,9 +21,12 @@ extern "C" {
  * @brief Server runtime configuration.
  */
 typedef struct ServerConfig {
-    uint16_t listen_port;                          /**< TCP port to listen on. */
-    char     document_root[SERVER_CONFIG_PATH_MAX];/**< Absolute or relative document root. */
-    char     log_file_path[SERVER_CONFIG_PATH_MAX];/**< Path of the access log file. */
+    uint16_t listen_port;                           /**< TCP port to listen on. */
+    char     document_root[SERVER_CONFIG_PATH_MAX]; /**< Absolute or relative document root. */
+    char     log_file_path[SERVER_CONFIG_PATH_MAX]; /**< Path of the access log file (file backend). */
+    bool     use_syslog_backend;                    /**< true -> log to syslog instead of file. */
+    size_t   log_max_file_size_bytes;               /**< File rotation threshold (0 disables rotation). */
+    int      log_max_rotated_files;                 /**< Number of rotated log files kept (>= 1). */
 } ServerConfig;
 
 /**

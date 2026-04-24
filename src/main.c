@@ -1,3 +1,4 @@
+#include "http_server/logger.h"
 #include "http_server/server.h"
 #include "http_server/socket_utils.h"
 
@@ -8,10 +9,11 @@
 static void print_usage(const char* program_name)
 {
     fprintf(stderr,
-            "Usage: %s <port> <document_root> [log_file]\n"
+            "Usage: %s <port> <document_root> [log_target]\n"
             "  port          TCP port to listen on (1-65535)\n"
             "  document_root Path to the directory with files to serve\n"
-            "  log_file      Optional access log file path (default: httpserver.log)\n",
+            "  log_target    Optional: file path, or \"syslog\" to use syslog(3)\n"
+            "                (default: httpserver.log)\n",
             program_name);
 }
 
@@ -24,6 +26,8 @@ int main(int argument_count, char* argument_values[])
 
     ServerConfig server_config;
     memset(&server_config, 0, sizeof(server_config));
+    server_config.log_max_file_size_bytes = LOGGER_DEFAULT_MAX_FILE_SIZE_BYTES;
+    server_config.log_max_rotated_files   = LOGGER_DEFAULT_MAX_ROTATED_FILES;
 
     if (!parse_tcp_port(argument_values[1], &server_config.listen_port)) {
         fprintf(stderr, "Invalid port: %s\n", argument_values[1]);
@@ -37,14 +41,20 @@ int main(int argument_count, char* argument_values[])
     }
     strcpy(server_config.document_root, document_root_argument);
 
-    const char* log_file_argument = (argument_count == 4)
-                                    ? argument_values[3]
-                                    : "httpserver.log";
-    if (strlen(log_file_argument) + 1 > sizeof(server_config.log_file_path)) {
-        fprintf(stderr, "Log file path is too long\n");
-        return EXIT_FAILURE;
+    const char* log_target_argument = (argument_count == 4)
+                                      ? argument_values[3]
+                                      : "httpserver.log";
+
+    if (strcmp(log_target_argument, "syslog") == 0) {
+        server_config.use_syslog_backend = true;
+    } else {
+        server_config.use_syslog_backend = false;
+        if (strlen(log_target_argument) + 1 > sizeof(server_config.log_file_path)) {
+            fprintf(stderr, "Log file path is too long\n");
+            return EXIT_FAILURE;
+        }
+        strcpy(server_config.log_file_path, log_target_argument);
     }
-    strcpy(server_config.log_file_path, log_file_argument);
 
     return server_run(&server_config);
 }
