@@ -1,108 +1,147 @@
 # HTTPServer
 
-A multi-process **HTTP/1.1 web server** written in C that uses `fork()` for concurrent client handling and serves static files with proper MIME type detection and request logging.
+A multi-process **HTTP/1.1 web server** written in C with a clean layered
+architecture, CGI/1.1 and PHP-CGI support, unit tests based on
+[GoogleTest](https://github.com/google/googletest), a CMake build system
+and [Doxygen](https://www.doxygen.nl/) documentation.
 
-![C](https://img.shields.io/badge/C-99-A8B9CC?logo=c)
+![C](https://img.shields.io/badge/C-11-A8B9CC?logo=c)
+![C++ (tests)](https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus)
+![CMake](https://img.shields.io/badge/CMake-3.14%2B-064F8C?logo=cmake)
+![GoogleTest](https://img.shields.io/badge/GoogleTest-1.14-4285F4)
 ![Linux](https://img.shields.io/badge/Linux-BSD_Sockets-FCC624?logo=linux)
-![HTTP](https://img.shields.io/badge/HTTP-1.1-005AF0)
 
 ## Features
 
-- **BSD socket API** with full `socket` / `bind` / `listen` / `accept` lifecycle
-- **Fork-based concurrency** -- each incoming connection is handled by a dedicated child process
-- **MIME type detection** for HTML, CSS, PNG, GIF, and JPG based on file extension
-- **Automatic index fallback** -- requests to `/` are served as `index.html`
-- **Request logging** to `myhttpd.log` with timestamps, client IP, process ID, requested URL, and response status
-- **404 error handling** with a human-readable error response when files are not found
-- **Content-Length header** computed from actual file size for correct HTTP responses
+- **HTTP/1.1** request parser (GET, HEAD, POST) with URL decoding
+- **Path-traversal protection** (`../` rejected)
+- **Static file serving** with extensible MIME table
+- **CGI/1.1** execution for `/cgi-bin/*` scripts
+- **PHP** execution via the system `php-cgi` binary
+- **Multi-process concurrency** via `fork()`, with `SIGCHLD`-based reaping
+- **Graceful shutdown** on `SIGINT` / `SIGTERM`
+- **Access log** with timestamps, PID, client IP, status and path
+- **Google Test** unit suite covering every pure module
+- **Doxygen** API documentation for every public function
 
-## Dependencies
+## Project layout
 
-| Component | Purpose |
-|-----------|---------|
-| GCC | C compiler |
-| POSIX / Linux | `fork()`, BSD sockets, `netinet/in.h` |
-| libc | Standard C library (stdio, stdlib, string, time) |
+```
+HTTPServer/
+├── CMakeLists.txt
+├── Doxyfile.in
+├── include/http_server/     Public API headers (Doxygen-commented)
+│   ├── server.h
+│   ├── socket_utils.h
+│   ├── request.h
+│   ├── response.h
+│   ├── status_codes.h
+│   ├── mime.h
+│   ├── path_utils.h
+│   ├── logger.h
+│   ├── file_handler.h
+│   ├── cgi_handler.h
+│   └── php_handler.h
+├── src/                     Implementation (.c files)
+├── tests/                   Google Test suites
+├── www/                     Sample document root
+│   ├── index.html, style.css
+│   ├── info.php
+│   └── cgi-bin/hello.cgi
+├── scripts/build.sh         One-shot build+test script
+└── docs/                    Generated documentation (after make docs)
+```
 
 ## Building
 
-```bash
-gcc httpd.c -o myhttpd
-```
+### Requirements
 
-## Usage
+| Component | Version |
+|-----------|---------|
+| CMake | >= 3.14 |
+| GCC or Clang | C11 + C++17 |
+| POSIX / Linux | fork, BSD sockets |
+| Doxygen (optional) | >= 1.9 |
+| php-cgi (optional) | runtime, for `.php` support |
 
-```bash
-./myhttpd <port> <document_root>
-```
-
-| Argument | Description |
-|----------|-------------|
-| `port` | TCP port number the server will listen on |
-| `document_root` | Path to the directory containing static files to serve |
-
-### Example
+### One-shot build + tests
 
 ```bash
-./myhttpd 8080 ./www
+./scripts/build.sh
 ```
 
-The server will listen on port 8080 and serve files from the `./www` directory. Navigating to `http://localhost:8080/` will serve `./www/index.html`.
+### Manual build
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
+```
+
+### Building Doxygen documentation
+
+```bash
+cmake -S . -B build -DBUILD_DOCUMENTATION=ON
+cmake --build build --target docs
+# Open build/docs/html/index.html
+```
+
+## Running
+
+```bash
+./build/httpserver <port> <document_root> [log_file]
+```
+
+Example:
+
+```bash
+./build/httpserver 8080 ./www
+curl http://localhost:8080/
+curl http://localhost:8080/cgi-bin/hello.cgi
+```
 
 ## Architecture
 
 ```
-Client Request
-      |
-      v
-  [accept()]  -- main process listens for connections
-      |
-      v
-   [fork()]   -- child process spawned per connection
-      |
-      v
-  [recv()]    -- read HTTP request, extract URL path
-      |
-      v
-  [fopen()]   -- open requested file from document root
-      |
-      +---> File found:     send "200 OK" + Content-Type + Content-Length + body
-      +---> File not found: send "404" + error message
-      |
-      v
-  [push_log]  -- append request details to myhttpd.log
-      |
-      v
-  [close()]   -- terminate child process
+  main -> ServerConfig -> server_run
+                              │
+                              ├── listening socket (SO_REUSEADDR)
+                              │
+                              ▼
+                          accept loop ── SIGCHLD reaper
+                              │
+                              └── fork() per connection
+                                    │
+                                    ▼
+                              handle_client_connection
+                                    │
+                                    ├── http_request_parse
+                                    ├── is_request_path_safe
+                                    ├── resolve_document_path
+                                    │
+                                    ├── cgi_handler_is_cgi_request ── cgi_handler_execute
+                                    ├── php_handler_is_php_request ── php_handler_execute
+                                    └── file_handler_serve
+                                              │
+                                              └── mime_get_content_type + response_write_*
 ```
 
-## Request Log Format
+## Clean-code principles applied
 
-Each request is logged to `myhttpd.log` with the following format:
-
-```
-[DATA: DD.MM.YYYY] [GODZINA: HH:MM:SS] IP_HOSTA:[x.x.x.x] PID_PROCESU: [pid] URL_ZADANY: [path] STATUS_ODPOWIEDZI: [OK|NIE ZNALEZIONO PLIKU]
-```
-
-## Supported MIME Types
-
-| Extension | Content-Type |
-|-----------|-------------|
-| `.html` | `text/html; charset=utf-8` |
-| `.css` | `text/css; charset=utf-8` |
-| `.png` | `image/png` |
-| `.jpg` | `image/jpg` |
-| `.gif` | `image/gif` |
-
-## Project Structure
-
-```
-HTTPServer/
-├── httpd.c         # Main server: socket init, fork loop, request handling, MIME routing
-├── httpd.h         # Helper functions: socket init, URL/extension parsing, logging, POP3 auth
-└── README.md
-```
+- **Single Responsibility** per translation unit: parsing, responding, logging,
+  MIME detection, CGI execution, PHP execution all live in separate modules.
+- **No single-letter identifiers** — names describe intent.
+- **No global mutable state** except a single append-only log path that is set
+  once at startup.
+- **Bounds-checked I/O**: `snprintf`, `memcpy`, `strncmp` &mdash; `strcat` /
+  `sprintf` removed.
+- **Path traversal rejected** before any filesystem access.
+- **Zombies reaped** via a `SIGCHLD` handler (original code leaked one zombie
+  per request).
+- **Signal-safe shutdown** through a `sig_atomic_t` flag.
+- **Doxygen-documented** public API.
+- **Header-only definitions removed** — headers are declarations only.
 
 ## License
 
-This project is provided as-is for educational purposes.
+MIT-compatible, provided as-is for educational purposes.
