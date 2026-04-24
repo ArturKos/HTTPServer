@@ -41,6 +41,7 @@ add_library(http_server_lib STATIC
     src/status_codes.c
     src/mime.c
     src/path_utils.c
+    src/range_utils.c
     src/logger.c
     src/socket_utils.c
     src/request.c

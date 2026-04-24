@@ -42,6 +42,7 @@ typedef struct HttpRequest {
     char       version[HTTP_VERSION_MAX];                /**< HTTP version string. */
     char       content_type[HTTP_HEADER_VALUE_MAX];      /**< Content-Type header (may be empty). */
     char       connection_header[HTTP_HEADER_VALUE_MAX]; /**< Connection header token ("close"/"keep-alive"). */
+    char       range_header[HTTP_HEADER_VALUE_MAX];      /**< Range header value (e.g. "bytes=0-499"). */
     size_t     content_length;                           /**< Parsed Content-Length or 0. */
 } HttpRequest;
 

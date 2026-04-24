@@ -38,6 +38,27 @@ bool response_write_headers(int client_socket,
                             bool keep_alive_enabled);
 
 /**
+ * @brief Write a 206 Partial Content response header block.
+ *
+ * Emits Content-Range, Content-Length for the slice, Accept-Ranges: bytes and
+ * the requested Connection header.
+ *
+ * @param client_socket       Connected client socket.
+ * @param content_type        Value of Content-Type or NULL.
+ * @param first_byte_offset   Inclusive first byte of the slice.
+ * @param last_byte_offset    Inclusive last byte of the slice.
+ * @param total_resource_size Full resource size in bytes.
+ * @param keep_alive_enabled  Connection keep-alive flag.
+ * @return true on success, false on write failure.
+ */
+bool response_write_partial_content_headers(int client_socket,
+                                            const char* content_type,
+                                            size_t first_byte_offset,
+                                            size_t last_byte_offset,
+                                            size_t total_resource_size,
+                                            bool keep_alive_enabled);
+
+/**
  * @brief Write an error response with a small HTML body.
  *
  * Errors always emit "Connection: close" since the server wants to drop the

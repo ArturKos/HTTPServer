@@ -181,6 +181,10 @@ bool http_request_parse(const char* raw_request,
                            out_request->connection_header,
                            sizeof(out_request->connection_header));
         parse_header_value(header_cursor, header_line_length,
+                           "Range",
+                           out_request->range_header,
+                           sizeof(out_request->range_header));
+        parse_header_value(header_cursor, header_line_length,
                            "Content-Length",
                            content_length_buffer, sizeof(content_length_buffer));
         if (content_length_buffer[0] != '\0') {

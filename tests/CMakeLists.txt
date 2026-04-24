@@ -19,6 +19,7 @@ add_executable(http_server_tests
     test_status_codes.cpp
     test_response.cpp
     test_thread_pool.cpp
+    test_range_utils.cpp
 )
 
 target_link_libraries(http_server_tests

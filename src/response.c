@@ -46,6 +46,7 @@ bool response_write_headers(int client_socket,
         header_length = snprintf(header_buffer, sizeof(header_buffer),
                                  "HTTP/1.1 %d %s\r\n"
                                  "Server: %s\r\n"
+                                 "Accept-Ranges: bytes\r\n"
                                  "Content-Type: %s\r\n"
                                  "Connection: %s\r\n"
                                  "\r\n",
@@ -57,6 +58,7 @@ bool response_write_headers(int client_socket,
         header_length = snprintf(header_buffer, sizeof(header_buffer),
                                  "HTTP/1.1 %d %s\r\n"
                                  "Server: %s\r\n"
+                                 "Accept-Ranges: bytes\r\n"
                                  "Content-Type: %s\r\n"
                                  "Content-Length: %zu\r\n"
                                  "Connection: %s\r\n"
@@ -68,6 +70,40 @@ bool response_write_headers(int client_socket,
                                  connection_header_value);
     }
 
+    if (header_length < 0 || (size_t)header_length >= sizeof(header_buffer)) {
+        return false;
+    }
+    return write_all_bytes(client_socket, header_buffer, (size_t)header_length) >= 0;
+}
+
+bool response_write_partial_content_headers(int client_socket,
+                                            const char* content_type,
+                                            size_t first_byte_offset,
+                                            size_t last_byte_offset,
+                                            size_t total_resource_size,
+                                            bool keep_alive_enabled)
+{
+    const char* effective_content_type = (content_type != NULL)
+                                         ? content_type
+                                         : "application/octet-stream";
+    const char* connection_header_value = keep_alive_enabled ? "keep-alive" : "close";
+    const size_t slice_length = last_byte_offset - first_byte_offset + 1;
+
+    char header_buffer[1024];
+    int header_length = snprintf(header_buffer, sizeof(header_buffer),
+                                 "HTTP/1.1 206 Partial Content\r\n"
+                                 "Server: %s\r\n"
+                                 "Accept-Ranges: bytes\r\n"
+                                 "Content-Type: %s\r\n"
+                                 "Content-Range: bytes %zu-%zu/%zu\r\n"
+                                 "Content-Length: %zu\r\n"
+                                 "Connection: %s\r\n"
+                                 "\r\n",
+                                 HTTP_SERVER_NAME,
+                                 effective_content_type,
+                                 first_byte_offset, last_byte_offset, total_resource_size,
+                                 slice_length,
+                                 connection_header_value);
     if (header_length < 0 || (size_t)header_length >= sizeof(header_buffer)) {
         return false;
     }
