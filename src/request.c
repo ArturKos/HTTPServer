@@ -8,6 +8,23 @@
 #include <string.h>
 #include <strings.h>
 
+bool http_request_is_keep_alive(const HttpRequest* request)
+{
+    if (request == NULL) return false;
+
+    const bool client_said_close     = strcasecmp(request->connection_header, "close") == 0;
+    const bool client_said_keepalive = strcasecmp(request->connection_header, "keep-alive") == 0;
+
+    if (client_said_close) return false;
+    if (strcmp(request->version, "HTTP/1.1") == 0) {
+        return true;
+    }
+    if (strcmp(request->version, "HTTP/1.0") == 0) {
+        return client_said_keepalive;
+    }
+    return false;
+}
+
 const char* http_method_to_string(HttpMethod method)
 {
     switch (method) {
@@ -159,6 +176,10 @@ bool http_request_parse(const char* raw_request,
         parse_header_value(header_cursor, header_line_length,
                            "Content-Type",
                            out_request->content_type, sizeof(out_request->content_type));
+        parse_header_value(header_cursor, header_line_length,
+                           "Connection",
+                           out_request->connection_header,
+                           sizeof(out_request->connection_header));
         parse_header_value(header_cursor, header_line_length,
                            "Content-Length",
                            content_length_buffer, sizeof(content_length_buffer));

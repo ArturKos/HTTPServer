@@ -31,7 +31,8 @@ static int send_file_contents(int client_socket, FILE* file_stream)
 
 int file_handler_serve(int client_socket,
                        const HttpRequest* request,
-                       const char* resolved_path)
+                       const char* resolved_path,
+                       bool keep_alive_enabled)
 {
     struct stat file_stat_buffer;
     if (stat(resolved_path, &file_stat_buffer) != 0) {
@@ -60,7 +61,8 @@ int file_handler_serve(int client_socket,
     if (!response_write_headers(client_socket,
                                 HTTP_STATUS_OK,
                                 content_type,
-                                (size_t)file_stat_buffer.st_size)) {
+                                (size_t)file_stat_buffer.st_size,
+                                keep_alive_enabled)) {
         fclose(file_stream);
         return HTTP_STATUS_INTERNAL_SERVER_ERROR;
     }

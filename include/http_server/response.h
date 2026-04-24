@@ -24,19 +24,24 @@ extern "C" {
  * is NULL, "application/octet-stream" is used. When @p content_length is SIZE_MAX
  * the Content-Length header is omitted (useful for chunked / streaming responses).
  *
- * @param client_socket Connected client socket.
- * @param status_code   HTTP status code (e.g. 200, 404).
- * @param content_type  Value of the Content-Type header or NULL.
- * @param content_length Size of the body that will follow the headers.
+ * @param client_socket    Connected client socket.
+ * @param status_code      HTTP status code (e.g. 200, 404).
+ * @param content_type     Value of the Content-Type header or NULL.
+ * @param content_length   Size of the body that will follow the headers.
+ * @param keep_alive_enabled When true, emits "Connection: keep-alive"; otherwise "Connection: close".
  * @return true on success, false when the socket write fails.
  */
 bool response_write_headers(int client_socket,
                             int status_code,
                             const char* content_type,
-                            size_t content_length);
+                            size_t content_length,
+                            bool keep_alive_enabled);
 
 /**
  * @brief Write an error response with a small HTML body.
+ *
+ * Errors always emit "Connection: close" since the server wants to drop the
+ * socket after a protocol-level failure.
  *
  * @param client_socket Connected client socket.
  * @param status_code   HTTP status code (>= 400 expected).

@@ -36,13 +36,26 @@ typedef enum HttpMethod {
  * @brief Parsed HTTP request line and commonly-used headers.
  */
 typedef struct HttpRequest {
-    HttpMethod method;                                /**< Parsed HTTP method. */
-    char       path[HTTP_REQUEST_PATH_MAX];           /**< Decoded request path. */
-    char       query_string[HTTP_REQUEST_QUERY_MAX];  /**< Query string (no leading '?'). */
-    char       version[HTTP_VERSION_MAX];             /**< HTTP version string. */
-    char       content_type[HTTP_HEADER_VALUE_MAX];   /**< Content-Type header (may be empty). */
-    size_t     content_length;                        /**< Parsed Content-Length or 0. */
+    HttpMethod method;                                   /**< Parsed HTTP method. */
+    char       path[HTTP_REQUEST_PATH_MAX];              /**< Decoded request path. */
+    char       query_string[HTTP_REQUEST_QUERY_MAX];     /**< Query string (no leading '?'). */
+    char       version[HTTP_VERSION_MAX];                /**< HTTP version string. */
+    char       content_type[HTTP_HEADER_VALUE_MAX];      /**< Content-Type header (may be empty). */
+    char       connection_header[HTTP_HEADER_VALUE_MAX]; /**< Connection header token ("close"/"keep-alive"). */
+    size_t     content_length;                           /**< Parsed Content-Length or 0. */
 } HttpRequest;
+
+/**
+ * @brief Decide whether the connection should be kept alive after serving this request.
+ *
+ * Rules: HTTP/1.1 keeps the connection alive unless the client sent
+ * "Connection: close"; HTTP/1.0 closes unless the client explicitly sent
+ * "Connection: keep-alive".
+ *
+ * @param request Parsed request.
+ * @return true if the caller should attempt another request on the same socket.
+ */
+bool http_request_is_keep_alive(const HttpRequest* request);
 
 /**
  * @brief Convert an @ref HttpMethod enum value into its canonical string form.

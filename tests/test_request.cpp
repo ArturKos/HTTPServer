@@ -71,6 +71,38 @@ TEST(HttpRequestParse, RejectsMalformedRequestLine)
     EXPECT_FALSE(http_request_parse(raw_request, sizeof(raw_request) - 1, &parsed_request));
 }
 
+TEST(HttpRequestKeepAlive, Http11DefaultsToKeepAlive)
+{
+    const char raw_request[] = "GET / HTTP/1.1\r\nHost: x\r\n\r\n";
+    HttpRequest parsed_request;
+    ASSERT_TRUE(http_request_parse(raw_request, sizeof(raw_request) - 1, &parsed_request));
+    EXPECT_TRUE(http_request_is_keep_alive(&parsed_request));
+}
+
+TEST(HttpRequestKeepAlive, Http11ClosesOnExplicitCloseHeader)
+{
+    const char raw_request[] = "GET / HTTP/1.1\r\nConnection: close\r\n\r\n";
+    HttpRequest parsed_request;
+    ASSERT_TRUE(http_request_parse(raw_request, sizeof(raw_request) - 1, &parsed_request));
+    EXPECT_FALSE(http_request_is_keep_alive(&parsed_request));
+}
+
+TEST(HttpRequestKeepAlive, Http10ClosesByDefault)
+{
+    const char raw_request[] = "GET / HTTP/1.0\r\nHost: x\r\n\r\n";
+    HttpRequest parsed_request;
+    ASSERT_TRUE(http_request_parse(raw_request, sizeof(raw_request) - 1, &parsed_request));
+    EXPECT_FALSE(http_request_is_keep_alive(&parsed_request));
+}
+
+TEST(HttpRequestKeepAlive, Http10OptsInViaHeader)
+{
+    const char raw_request[] = "GET / HTTP/1.0\r\nConnection: keep-alive\r\n\r\n";
+    HttpRequest parsed_request;
+    ASSERT_TRUE(http_request_parse(raw_request, sizeof(raw_request) - 1, &parsed_request));
+    EXPECT_TRUE(http_request_is_keep_alive(&parsed_request));
+}
+
 TEST(HttpMethodToString, ReturnsCanonicalStrings)
 {
     EXPECT_STREQ(http_method_to_string(HTTP_METHOD_GET),     "GET");

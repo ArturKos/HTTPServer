@@ -27,12 +27,14 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#define CONNECTION_BACKLOG          512
-#define REQUEST_READ_BUFFER_SIZE    8192
-#define RESOLVED_PATH_BUFFER_SIZE   1024
-#define DEFAULT_WORKER_THREAD_COUNT 8
-#define DEFAULT_TASK_QUEUE_CAPACITY 1024
-#define EPOLL_EVENT_BATCH_SIZE      32
+#define CONNECTION_BACKLOG            512
+#define REQUEST_READ_BUFFER_SIZE      8192
+#define RESOLVED_PATH_BUFFER_SIZE     1024
+#define DEFAULT_WORKER_THREAD_COUNT   8
+#define DEFAULT_TASK_QUEUE_CAPACITY   1024
+#define EPOLL_EVENT_BATCH_SIZE        32
+#define KEEP_ALIVE_IDLE_TIMEOUT_SEC   15
+#define KEEP_ALIVE_MAX_REQUESTS       100
 
 static volatile sig_atomic_t g_shutdown_requested = 0;
 static int                   g_shutdown_eventfd   = -1;
@@ -72,7 +74,8 @@ static int dispatch_request(int client_socket,
                             const ServerConfig* config,
                             const char* client_ip,
                             const char* raw_request_body,
-                            size_t raw_request_body_size)
+                            size_t raw_request_body_size,
+                            bool keep_alive_enabled)
 {
     if (!is_request_path_safe(request->path)) {
         response_write_error(client_socket, HTTP_STATUS_FORBIDDEN);
@@ -103,7 +106,17 @@ static int dispatch_request(int client_socket,
         return HTTP_STATUS_METHOD_NOT_ALLOWED;
     }
 
-    return file_handler_serve(client_socket, request, resolved_path_buffer);
+    return file_handler_serve(client_socket, request, resolved_path_buffer,
+                              keep_alive_enabled);
+}
+
+static void configure_client_socket_timeout(int client_socket)
+{
+    struct timeval idle_timeout;
+    idle_timeout.tv_sec  = KEEP_ALIVE_IDLE_TIMEOUT_SEC;
+    idle_timeout.tv_usec = 0;
+    setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO,
+               &idle_timeout, sizeof(idle_timeout));
 }
 
 static void handle_client_connection(int client_socket,
@@ -113,33 +126,48 @@ static void handle_client_connection(int client_socket,
     char client_ip_string[INET_ADDRSTRLEN] = "0.0.0.0";
     inet_ntop(AF_INET, &client_address->sin_addr, client_ip_string, sizeof(client_ip_string));
 
-    char request_buffer[REQUEST_READ_BUFFER_SIZE];
-    ssize_t bytes_received = recv(client_socket, request_buffer,
-                                  sizeof(request_buffer) - 1, 0);
-    if (bytes_received <= 0) {
-        return;
-    }
-    request_buffer[bytes_received] = '\0';
+    configure_client_socket_timeout(client_socket);
 
-    HttpRequest parsed_request;
-    if (!http_request_parse(request_buffer, (size_t)bytes_received, &parsed_request)) {
-        response_write_error(client_socket, HTTP_STATUS_BAD_REQUEST);
+    int requests_served_on_connection = 0;
+    bool should_keep_connection_alive = true;
+
+    while (should_keep_connection_alive
+           && requests_served_on_connection < KEEP_ALIVE_MAX_REQUESTS) {
+        char request_buffer[REQUEST_READ_BUFFER_SIZE];
+        ssize_t bytes_received = recv(client_socket, request_buffer,
+                                      sizeof(request_buffer) - 1, 0);
+        if (bytes_received <= 0) {
+            break;
+        }
+        request_buffer[bytes_received] = '\0';
+
+        HttpRequest parsed_request;
+        if (!http_request_parse(request_buffer, (size_t)bytes_received, &parsed_request)) {
+            response_write_error(client_socket, HTTP_STATUS_BAD_REQUEST);
+            logger_log_request(client_ip_string, (int)pthread_self(),
+                               HTTP_STATUS_BAD_REQUEST, "-");
+            break;
+        }
+
+        const bool keep_alive_for_this_request = http_request_is_keep_alive(&parsed_request);
+
+        const char* headers_end = strstr(request_buffer, "\r\n\r\n");
+        const char* body_start = (headers_end != NULL) ? headers_end + 4 : NULL;
+        const size_t body_size = (body_start != NULL)
+                                 ? (size_t)(bytes_received - (body_start - request_buffer))
+                                 : 0;
+
+        const int response_status = dispatch_request(client_socket, &parsed_request,
+                                                     config, client_ip_string,
+                                                     body_start, body_size,
+                                                     keep_alive_for_this_request);
         logger_log_request(client_ip_string, (int)pthread_self(),
-                           HTTP_STATUS_BAD_REQUEST, "-");
-        return;
+                           response_status, parsed_request.path);
+
+        ++requests_served_on_connection;
+        should_keep_connection_alive = keep_alive_for_this_request
+                                       && response_status < 400;
     }
-
-    const char* headers_end = strstr(request_buffer, "\r\n\r\n");
-    const char* body_start = (headers_end != NULL) ? headers_end + 4 : NULL;
-    const size_t body_size = (body_start != NULL)
-                             ? (size_t)(bytes_received - (body_start - request_buffer))
-                             : 0;
-
-    const int response_status = dispatch_request(client_socket, &parsed_request,
-                                                 config, client_ip_string,
-                                                 body_start, body_size);
-    logger_log_request(client_ip_string, (int)pthread_self(),
-                       response_status, parsed_request.path);
 }
 
 static void connection_task_runner(void* opaque_task_argument)

@@ -31,12 +31,14 @@ static ssize_t write_all_bytes(int socket_fd, const void* buffer, size_t buffer_
 bool response_write_headers(int client_socket,
                             int status_code,
                             const char* content_type,
-                            size_t content_length)
+                            size_t content_length,
+                            bool keep_alive_enabled)
 {
     const char* reason_phrase = http_status_get_reason_phrase(status_code);
     const char* effective_content_type = (content_type != NULL)
                                          ? content_type
                                          : "application/octet-stream";
+    const char* connection_header_value = keep_alive_enabled ? "keep-alive" : "close";
 
     char header_buffer[1024];
     int header_length;
@@ -45,23 +47,25 @@ bool response_write_headers(int client_socket,
                                  "HTTP/1.1 %d %s\r\n"
                                  "Server: %s\r\n"
                                  "Content-Type: %s\r\n"
-                                 "Connection: close\r\n"
+                                 "Connection: %s\r\n"
                                  "\r\n",
                                  status_code, reason_phrase,
                                  HTTP_SERVER_NAME,
-                                 effective_content_type);
+                                 effective_content_type,
+                                 connection_header_value);
     } else {
         header_length = snprintf(header_buffer, sizeof(header_buffer),
                                  "HTTP/1.1 %d %s\r\n"
                                  "Server: %s\r\n"
                                  "Content-Type: %s\r\n"
                                  "Content-Length: %zu\r\n"
-                                 "Connection: close\r\n"
+                                 "Connection: %s\r\n"
                                  "\r\n",
                                  status_code, reason_phrase,
                                  HTTP_SERVER_NAME,
                                  effective_content_type,
-                                 content_length);
+                                 content_length,
+                                 connection_header_value);
     }
 
     if (header_length < 0 || (size_t)header_length >= sizeof(header_buffer)) {
@@ -86,7 +90,8 @@ bool response_write_error(int client_socket, int status_code)
     }
 
     if (!response_write_headers(client_socket, status_code,
-                                "text/html; charset=utf-8", (size_t)body_length)) {
+                                "text/html; charset=utf-8", (size_t)body_length,
+                                false)) {
         return false;
     }
     return write_all_bytes(client_socket, body_buffer, (size_t)body_length) >= 0;

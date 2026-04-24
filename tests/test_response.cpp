@@ -34,7 +34,7 @@ TEST(ResponseHeaders, WritesExpectedStatusLineAndHeaders)
     ASSERT_EQ(create_connected_socket_pair(socket_pair_fds), 0);
 
     ASSERT_TRUE(response_write_headers(socket_pair_fds[1], 200,
-                                       "text/plain; charset=utf-8", 42));
+                                       "text/plain; charset=utf-8", 42, false));
     close(socket_pair_fds[1]);
 
     const std::string received_output = drain_socket(socket_pair_fds[0]);
@@ -43,7 +43,23 @@ TEST(ResponseHeaders, WritesExpectedStatusLineAndHeaders)
     EXPECT_NE(received_output.find("HTTP/1.1 200 OK\r\n"), std::string::npos);
     EXPECT_NE(received_output.find("Content-Type: text/plain; charset=utf-8\r\n"), std::string::npos);
     EXPECT_NE(received_output.find("Content-Length: 42\r\n"), std::string::npos);
+    EXPECT_NE(received_output.find("Connection: close\r\n"), std::string::npos);
     EXPECT_NE(received_output.find("\r\n\r\n"), std::string::npos);
+}
+
+TEST(ResponseHeaders, EmitsKeepAliveWhenRequested)
+{
+    int socket_pair_fds[2];
+    ASSERT_EQ(create_connected_socket_pair(socket_pair_fds), 0);
+
+    ASSERT_TRUE(response_write_headers(socket_pair_fds[1], 200,
+                                       "text/html", 7, true));
+    close(socket_pair_fds[1]);
+
+    const std::string received_output = drain_socket(socket_pair_fds[0]);
+    close(socket_pair_fds[0]);
+
+    EXPECT_NE(received_output.find("Connection: keep-alive\r\n"), std::string::npos);
 }
 
 TEST(ResponseError, ContainsStatusCodeInBody)
