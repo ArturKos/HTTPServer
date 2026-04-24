@@ -1,6 +1,7 @@
 #include "http_server/server.h"
 
 #include "http_server/cgi_handler.h"
+#include "http_server/connection_io.h"
 #include "http_server/file_handler.h"
 #include "http_server/logger.h"
 #include "http_server/path_utils.h"
@@ -10,6 +11,7 @@
 #include "http_server/socket_utils.h"
 #include "http_server/status_codes.h"
 #include "http_server/thread_pool.h"
+#include "http_server/tls_context.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -40,9 +42,10 @@ static volatile sig_atomic_t g_shutdown_requested = 0;
 static int                   g_shutdown_eventfd   = -1;
 
 typedef struct ConnectionTask {
-    int                client_socket;
-    struct sockaddr_in client_address;
+    int                 client_socket;
+    struct sockaddr_in  client_address;
     const ServerConfig* server_config;
+    TlsContext*         tls_context;
 } ConnectionTask;
 
 static void handle_shutdown_signal(int signal_number)
@@ -69,7 +72,7 @@ static bool install_signal_handlers(void)
     return true;
 }
 
-static int dispatch_request(int client_socket,
+static int dispatch_request(ConnectionContext* connection,
                             const HttpRequest* request,
                             const ServerConfig* config,
                             const char* client_ip,
@@ -78,7 +81,7 @@ static int dispatch_request(int client_socket,
                             bool keep_alive_enabled)
 {
     if (!is_request_path_safe(request->path)) {
-        response_write_error(client_socket, HTTP_STATUS_FORBIDDEN);
+        response_write_error(connection, HTTP_STATUS_FORBIDDEN);
         return HTTP_STATUS_FORBIDDEN;
     }
 
@@ -87,26 +90,26 @@ static int dispatch_request(int client_socket,
                                request->path,
                                resolved_path_buffer,
                                sizeof(resolved_path_buffer))) {
-        response_write_error(client_socket, HTTP_STATUS_INTERNAL_SERVER_ERROR);
+        response_write_error(connection, HTTP_STATUS_INTERNAL_SERVER_ERROR);
         return HTTP_STATUS_INTERNAL_SERVER_ERROR;
     }
 
     if (cgi_handler_is_cgi_request(request->path)) {
-        return cgi_handler_execute(client_socket, request, resolved_path_buffer,
+        return cgi_handler_execute(connection, request, resolved_path_buffer,
                                    client_ip, raw_request_body, raw_request_body_size);
     }
 
     if (php_handler_is_php_request(request->path)) {
-        return php_handler_execute(client_socket, request, resolved_path_buffer,
+        return php_handler_execute(connection, request, resolved_path_buffer,
                                    client_ip, raw_request_body, raw_request_body_size);
     }
 
     if (request->method != HTTP_METHOD_GET && request->method != HTTP_METHOD_HEAD) {
-        response_write_error(client_socket, HTTP_STATUS_METHOD_NOT_ALLOWED);
+        response_write_error(connection, HTTP_STATUS_METHOD_NOT_ALLOWED);
         return HTTP_STATUS_METHOD_NOT_ALLOWED;
     }
 
-    return file_handler_serve(client_socket, request, resolved_path_buffer,
+    return file_handler_serve(connection, request, resolved_path_buffer,
                               keep_alive_enabled);
 }
 
@@ -119,14 +122,12 @@ static void configure_client_socket_timeout(int client_socket)
                &idle_timeout, sizeof(idle_timeout));
 }
 
-static void handle_client_connection(int client_socket,
+static void handle_client_connection(ConnectionContext* connection,
                                      const struct sockaddr_in* client_address,
                                      const ServerConfig* config)
 {
     char client_ip_string[INET_ADDRSTRLEN] = "0.0.0.0";
     inet_ntop(AF_INET, &client_address->sin_addr, client_ip_string, sizeof(client_ip_string));
-
-    configure_client_socket_timeout(client_socket);
 
     int requests_served_on_connection = 0;
     bool should_keep_connection_alive = true;
@@ -134,8 +135,8 @@ static void handle_client_connection(int client_socket,
     while (should_keep_connection_alive
            && requests_served_on_connection < KEEP_ALIVE_MAX_REQUESTS) {
         char request_buffer[REQUEST_READ_BUFFER_SIZE];
-        ssize_t bytes_received = recv(client_socket, request_buffer,
-                                      sizeof(request_buffer) - 1, 0);
+        ssize_t bytes_received = connection_read(connection, request_buffer,
+                                                 sizeof(request_buffer) - 1);
         if (bytes_received <= 0) {
             break;
         }
@@ -143,7 +144,7 @@ static void handle_client_connection(int client_socket,
 
         HttpRequest parsed_request;
         if (!http_request_parse(request_buffer, (size_t)bytes_received, &parsed_request)) {
-            response_write_error(client_socket, HTTP_STATUS_BAD_REQUEST);
+            response_write_error(connection, HTTP_STATUS_BAD_REQUEST);
             logger_log_request(client_ip_string, (int)pthread_self(),
                                HTTP_STATUS_BAD_REQUEST, "-");
             break;
@@ -157,7 +158,7 @@ static void handle_client_connection(int client_socket,
                                  ? (size_t)(bytes_received - (body_start - request_buffer))
                                  : 0;
 
-        const int response_status = dispatch_request(client_socket, &parsed_request,
+        const int response_status = dispatch_request(connection, &parsed_request,
                                                      config, client_ip_string,
                                                      body_start, body_size,
                                                      keep_alive_for_this_request);
@@ -173,15 +174,33 @@ static void handle_client_connection(int client_socket,
 static void connection_task_runner(void* opaque_task_argument)
 {
     ConnectionTask* connection_task = (ConnectionTask*)opaque_task_argument;
-    handle_client_connection(connection_task->client_socket,
-                             &connection_task->client_address,
-                             connection_task->server_config);
+    configure_client_socket_timeout(connection_task->client_socket);
+
+    ConnectionContext connection;
+    connection.raw_socket_fd = connection_task->client_socket;
+    connection.tls_session   = NULL;
+
+    bool proceed_with_serving = true;
+    if (connection_task->tls_context != NULL) {
+        proceed_with_serving = tls_context_accept(connection_task->tls_context,
+                                                  connection_task->client_socket,
+                                                  &connection);
+    }
+
+    if (proceed_with_serving) {
+        handle_client_connection(&connection,
+                                 &connection_task->client_address,
+                                 connection_task->server_config);
+    }
+
+    tls_connection_shutdown(&connection);
     close(connection_task->client_socket);
     free(connection_task);
 }
 
 static bool accept_pending_connections(int listening_socket,
                                        const ServerConfig* server_config,
+                                       TlsContext* tls_context,
                                        ThreadPool* worker_pool)
 {
     for (;;) {
@@ -205,6 +224,7 @@ static bool accept_pending_connections(int listening_socket,
         connection_task->client_socket  = client_socket;
         connection_task->client_address = client_address;
         connection_task->server_config  = server_config;
+        connection_task->tls_context    = tls_context;
 
         if (!thread_pool_submit_task(worker_pool, connection_task_runner, connection_task)) {
             close(client_socket);
@@ -241,16 +261,31 @@ int server_run(const ServerConfig* server_config)
         return EXIT_FAILURE;
     }
 
+    TlsContext* tls_context = NULL;
+    if (server_config->use_tls) {
+        tls_context = tls_context_create(server_config->tls_certificate_path,
+                                         server_config->tls_private_key_path);
+        if (tls_context == NULL) {
+            fprintf(stderr, "Failed to initialise TLS context\n");
+            logger_shutdown();
+            return EXIT_FAILURE;
+        }
+    }
+
     int listening_socket = create_listening_socket(server_config->listen_port,
                                                    CONNECTION_BACKLOG);
     if (listening_socket < 0) {
         fprintf(stderr, "Failed to create listening socket on port %u: %s\n",
                 server_config->listen_port, strerror(errno));
+        tls_context_destroy(tls_context);
+        logger_shutdown();
         return EXIT_FAILURE;
     }
     if (set_socket_nonblocking(listening_socket) < 0) {
         fprintf(stderr, "Failed to set listening socket non-blocking: %s\n", strerror(errno));
         close(listening_socket);
+        tls_context_destroy(tls_context);
+        logger_shutdown();
         return EXIT_FAILURE;
     }
 
@@ -258,6 +293,8 @@ int server_run(const ServerConfig* server_config)
     if (g_shutdown_eventfd < 0) {
         fprintf(stderr, "Failed to create shutdown eventfd: %s\n", strerror(errno));
         close(listening_socket);
+        tls_context_destroy(tls_context);
+        logger_shutdown();
         return EXIT_FAILURE;
     }
 
@@ -266,6 +303,8 @@ int server_run(const ServerConfig* server_config)
         fprintf(stderr, "epoll_create1 failed: %s\n", strerror(errno));
         close(listening_socket);
         close(g_shutdown_eventfd);
+        tls_context_destroy(tls_context);
+        logger_shutdown();
         return EXIT_FAILURE;
     }
 
@@ -286,12 +325,15 @@ int server_run(const ServerConfig* server_config)
         close(epoll_descriptor);
         close(listening_socket);
         close(g_shutdown_eventfd);
+        tls_context_destroy(tls_context);
+        logger_shutdown();
         return EXIT_FAILURE;
     }
 
     fprintf(stdout,
-            "Server listening on port %u, document root: %s, workers: %d\n",
+            "Server listening on port %u (%s), document root: %s, workers: %d\n",
             server_config->listen_port,
+            server_config->use_tls ? "TLS" : "plain",
             server_config->document_root,
             DEFAULT_WORKER_THREAD_COUNT);
 
@@ -308,7 +350,8 @@ int server_run(const ServerConfig* server_config)
         for (int event_index = 0; event_index < ready_event_count; ++event_index) {
             const int triggered_fd = ready_events[event_index].data.fd;
             if (triggered_fd == listening_socket) {
-                accept_pending_connections(listening_socket, server_config, worker_pool);
+                accept_pending_connections(listening_socket, server_config,
+                                           tls_context, worker_pool);
             } else if (triggered_fd == g_shutdown_eventfd) {
                 g_shutdown_requested = 1;
             }
@@ -319,6 +362,7 @@ int server_run(const ServerConfig* server_config)
     close(epoll_descriptor);
     close(listening_socket);
     close(g_shutdown_eventfd);
+    tls_context_destroy(tls_context);
     logger_shutdown();
     fprintf(stdout, "Server shut down gracefully\n");
     return EXIT_SUCCESS;

@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include "http_server/connection_io.h"
 #include "http_server/response.h"
 
 #include <array>
@@ -26,6 +27,14 @@ std::string drain_socket(int socket_fd)
     return accumulated_output;
 }
 
+ConnectionContext make_plain_connection(int socket_fd)
+{
+    ConnectionContext connection{};
+    connection.raw_socket_fd = socket_fd;
+    connection.tls_session   = nullptr;
+    return connection;
+}
+
 }  // namespace
 
 TEST(ResponseHeaders, WritesExpectedStatusLineAndHeaders)
@@ -33,7 +42,8 @@ TEST(ResponseHeaders, WritesExpectedStatusLineAndHeaders)
     int socket_pair_fds[2];
     ASSERT_EQ(create_connected_socket_pair(socket_pair_fds), 0);
 
-    ASSERT_TRUE(response_write_headers(socket_pair_fds[1], 200,
+    ConnectionContext writer_connection = make_plain_connection(socket_pair_fds[1]);
+    ASSERT_TRUE(response_write_headers(&writer_connection, 200,
                                        "text/plain; charset=utf-8", 42, false));
     close(socket_pair_fds[1]);
 
@@ -52,7 +62,8 @@ TEST(ResponseHeaders, EmitsKeepAliveWhenRequested)
     int socket_pair_fds[2];
     ASSERT_EQ(create_connected_socket_pair(socket_pair_fds), 0);
 
-    ASSERT_TRUE(response_write_headers(socket_pair_fds[1], 200,
+    ConnectionContext writer_connection = make_plain_connection(socket_pair_fds[1]);
+    ASSERT_TRUE(response_write_headers(&writer_connection, 200,
                                        "text/html", 7, true));
     close(socket_pair_fds[1]);
 
@@ -67,7 +78,8 @@ TEST(ResponseError, ContainsStatusCodeInBody)
     int socket_pair_fds[2];
     ASSERT_EQ(create_connected_socket_pair(socket_pair_fds), 0);
 
-    ASSERT_TRUE(response_write_error(socket_pair_fds[1], 404));
+    ConnectionContext writer_connection = make_plain_connection(socket_pair_fds[1]);
+    ASSERT_TRUE(response_write_error(&writer_connection, 404));
     close(socket_pair_fds[1]);
 
     const std::string received_output = drain_socket(socket_pair_fds[0]);

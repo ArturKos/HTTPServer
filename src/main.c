@@ -9,17 +9,26 @@
 static void print_usage(const char* program_name)
 {
     fprintf(stderr,
-            "Usage: %s <port> <document_root> [log_target]\n"
+            "Usage: %s <port> <document_root> [log_target] [tls_cert tls_key]\n"
             "  port          TCP port to listen on (1-65535)\n"
-            "  document_root Path to the directory with files to serve\n"
-            "  log_target    Optional: file path, or \"syslog\" to use syslog(3)\n"
-            "                (default: httpserver.log)\n",
+            "  document_root Directory with files to serve\n"
+            "  log_target    File path or \"syslog\" (default: httpserver.log)\n"
+            "  tls_cert      Optional PEM server certificate to enable TLS\n"
+            "  tls_key       Optional PEM private key (required when tls_cert given)\n",
             program_name);
+}
+
+static bool copy_bounded(char* destination, size_t destination_size, const char* source)
+{
+    const size_t source_length = strlen(source);
+    if (source_length + 1 > destination_size) return false;
+    memcpy(destination, source, source_length + 1);
+    return true;
 }
 
 int main(int argument_count, char* argument_values[])
 {
-    if (argument_count < 3 || argument_count > 4) {
+    if (argument_count < 3 || argument_count > 6 || argument_count == 5) {
         print_usage(argument_values[0]);
         return EXIT_FAILURE;
     }
@@ -34,14 +43,14 @@ int main(int argument_count, char* argument_values[])
         return EXIT_FAILURE;
     }
 
-    const char* document_root_argument = argument_values[2];
-    if (strlen(document_root_argument) + 1 > sizeof(server_config.document_root)) {
+    if (!copy_bounded(server_config.document_root,
+                      sizeof(server_config.document_root),
+                      argument_values[2])) {
         fprintf(stderr, "Document root path is too long\n");
         return EXIT_FAILURE;
     }
-    strcpy(server_config.document_root, document_root_argument);
 
-    const char* log_target_argument = (argument_count == 4)
+    const char* log_target_argument = (argument_count >= 4)
                                       ? argument_values[3]
                                       : "httpserver.log";
 
@@ -49,11 +58,25 @@ int main(int argument_count, char* argument_values[])
         server_config.use_syslog_backend = true;
     } else {
         server_config.use_syslog_backend = false;
-        if (strlen(log_target_argument) + 1 > sizeof(server_config.log_file_path)) {
+        if (!copy_bounded(server_config.log_file_path,
+                          sizeof(server_config.log_file_path),
+                          log_target_argument)) {
             fprintf(stderr, "Log file path is too long\n");
             return EXIT_FAILURE;
         }
-        strcpy(server_config.log_file_path, log_target_argument);
+    }
+
+    if (argument_count == 6) {
+        server_config.use_tls = true;
+        if (!copy_bounded(server_config.tls_certificate_path,
+                          sizeof(server_config.tls_certificate_path),
+                          argument_values[4])
+            || !copy_bounded(server_config.tls_private_key_path,
+                             sizeof(server_config.tls_private_key_path),
+                             argument_values[5])) {
+            fprintf(stderr, "TLS certificate or key path is too long\n");
+            return EXIT_FAILURE;
+        }
     }
 
     return server_run(&server_config);

@@ -12,7 +12,9 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-static int send_file_contents(int client_socket, FILE* file_stream, size_t bytes_to_send)
+static int send_file_contents(ConnectionContext* connection,
+                              FILE* file_stream,
+                              size_t bytes_to_send)
 {
     char file_chunk_buffer[8192];
     size_t remaining_bytes = bytes_to_send;
@@ -25,7 +27,7 @@ static int send_file_contents(int client_socket, FILE* file_stream, size_t bytes
             if (ferror(file_stream)) return -1;
             break;
         }
-        if (response_write_body(client_socket, file_chunk_buffer, bytes_read) < 0) {
+        if (response_write_body(connection, file_chunk_buffer, bytes_read) < 0) {
             return -1;
         }
         remaining_bytes -= bytes_read;
@@ -33,19 +35,19 @@ static int send_file_contents(int client_socket, FILE* file_stream, size_t bytes
     return 0;
 }
 
-int file_handler_serve(int client_socket,
+int file_handler_serve(ConnectionContext* connection,
                        const HttpRequest* request,
                        const char* resolved_path,
                        bool keep_alive_enabled)
 {
     struct stat file_stat_buffer;
     if (stat(resolved_path, &file_stat_buffer) != 0) {
-        response_write_error(client_socket, HTTP_STATUS_NOT_FOUND);
+        response_write_error(connection, HTTP_STATUS_NOT_FOUND);
         return HTTP_STATUS_NOT_FOUND;
     }
 
     if (!S_ISREG(file_stat_buffer.st_mode)) {
-        response_write_error(client_socket, HTTP_STATUS_FORBIDDEN);
+        response_write_error(connection, HTTP_STATUS_FORBIDDEN);
         return HTTP_STATUS_FORBIDDEN;
     }
 
@@ -54,7 +56,7 @@ int file_handler_serve(int client_socket,
         const int status_code = (errno == EACCES)
                                 ? HTTP_STATUS_FORBIDDEN
                                 : HTTP_STATUS_NOT_FOUND;
-        response_write_error(client_socket, status_code);
+        response_write_error(connection, status_code);
         return status_code;
     }
 
@@ -70,17 +72,17 @@ int file_handler_serve(int client_socket,
 
     if (range_parse_result == RANGE_PARSE_NOT_SATISFIABLE) {
         fclose(file_stream);
-        response_write_error(client_socket, HTTP_STATUS_RANGE_NOT_SATISFIABLE);
+        response_write_error(connection, HTTP_STATUS_RANGE_NOT_SATISFIABLE);
         return HTTP_STATUS_RANGE_NOT_SATISFIABLE;
     }
 
     if (range_parse_result == RANGE_PARSE_OK) {
         if (fseek(file_stream, (long)requested_byte_range.first_byte_offset, SEEK_SET) != 0) {
             fclose(file_stream);
-            response_write_error(client_socket, HTTP_STATUS_INTERNAL_SERVER_ERROR);
+            response_write_error(connection, HTTP_STATUS_INTERNAL_SERVER_ERROR);
             return HTTP_STATUS_INTERNAL_SERVER_ERROR;
         }
-        if (!response_write_partial_content_headers(client_socket,
+        if (!response_write_partial_content_headers(connection,
                                                     content_type,
                                                     requested_byte_range.first_byte_offset,
                                                     requested_byte_range.last_byte_offset,
@@ -95,13 +97,13 @@ int file_handler_serve(int client_socket,
         }
         const size_t slice_length = requested_byte_range.last_byte_offset
                                     - requested_byte_range.first_byte_offset + 1;
-        const int transfer_result = send_file_contents(client_socket, file_stream, slice_length);
+        const int transfer_result = send_file_contents(connection, file_stream, slice_length);
         fclose(file_stream);
         return (transfer_result == 0) ? HTTP_STATUS_PARTIAL_CONTENT
                                       : HTTP_STATUS_INTERNAL_SERVER_ERROR;
     }
 
-    if (!response_write_headers(client_socket,
+    if (!response_write_headers(connection,
                                 HTTP_STATUS_OK,
                                 content_type,
                                 total_file_size,
@@ -115,7 +117,7 @@ int file_handler_serve(int client_socket,
         return HTTP_STATUS_OK;
     }
 
-    const int transfer_result = send_file_contents(client_socket, file_stream, total_file_size);
+    const int transfer_result = send_file_contents(connection, file_stream, total_file_size);
     fclose(file_stream);
     return (transfer_result == 0) ? HTTP_STATUS_OK : HTTP_STATUS_INTERNAL_SERVER_ERROR;
 }

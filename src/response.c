@@ -2,33 +2,11 @@
 
 #include "http_server/status_codes.h"
 
-#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/socket.h>
-#include <unistd.h>
 
-static ssize_t write_all_bytes(int socket_fd, const void* buffer, size_t buffer_size)
-{
-    const unsigned char* byte_cursor = (const unsigned char*)buffer;
-    size_t remaining_bytes = buffer_size;
-    while (remaining_bytes > 0) {
-        ssize_t bytes_written = send(socket_fd, byte_cursor, remaining_bytes, MSG_NOSIGNAL);
-        if (bytes_written < 0) {
-            if (errno == EINTR) continue;
-            return -1;
-        }
-        if (bytes_written == 0) {
-            return -1;
-        }
-        byte_cursor     += (size_t)bytes_written;
-        remaining_bytes -= (size_t)bytes_written;
-    }
-    return (ssize_t)buffer_size;
-}
-
-bool response_write_headers(int client_socket,
+bool response_write_headers(ConnectionContext* connection,
                             int status_code,
                             const char* content_type,
                             size_t content_length,
@@ -73,10 +51,10 @@ bool response_write_headers(int client_socket,
     if (header_length < 0 || (size_t)header_length >= sizeof(header_buffer)) {
         return false;
     }
-    return write_all_bytes(client_socket, header_buffer, (size_t)header_length) >= 0;
+    return connection_write_all(connection, header_buffer, (size_t)header_length) >= 0;
 }
 
-bool response_write_partial_content_headers(int client_socket,
+bool response_write_partial_content_headers(ConnectionContext* connection,
                                             const char* content_type,
                                             size_t first_byte_offset,
                                             size_t last_byte_offset,
@@ -107,10 +85,10 @@ bool response_write_partial_content_headers(int client_socket,
     if (header_length < 0 || (size_t)header_length >= sizeof(header_buffer)) {
         return false;
     }
-    return write_all_bytes(client_socket, header_buffer, (size_t)header_length) >= 0;
+    return connection_write_all(connection, header_buffer, (size_t)header_length) >= 0;
 }
 
-bool response_write_error(int client_socket, int status_code)
+bool response_write_error(ConnectionContext* connection, int status_code)
 {
     const char* reason_phrase = http_status_get_reason_phrase(status_code);
 
@@ -125,15 +103,17 @@ bool response_write_error(int client_socket, int status_code)
         return false;
     }
 
-    if (!response_write_headers(client_socket, status_code,
+    if (!response_write_headers(connection, status_code,
                                 "text/html; charset=utf-8", (size_t)body_length,
                                 false)) {
         return false;
     }
-    return write_all_bytes(client_socket, body_buffer, (size_t)body_length) >= 0;
+    return connection_write_all(connection, body_buffer, (size_t)body_length) >= 0;
 }
 
-ssize_t response_write_body(int client_socket, const void* body_buffer, size_t body_size)
+ssize_t response_write_body(ConnectionContext* connection,
+                            const void* body_buffer,
+                            size_t body_size)
 {
-    return write_all_bytes(client_socket, body_buffer, body_size);
+    return connection_write_all(connection, body_buffer, body_size);
 }

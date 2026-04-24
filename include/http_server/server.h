@@ -21,12 +21,16 @@ extern "C" {
  * @brief Server runtime configuration.
  */
 typedef struct ServerConfig {
-    uint16_t listen_port;                           /**< TCP port to listen on. */
-    char     document_root[SERVER_CONFIG_PATH_MAX]; /**< Absolute or relative document root. */
-    char     log_file_path[SERVER_CONFIG_PATH_MAX]; /**< Path of the access log file (file backend). */
-    bool     use_syslog_backend;                    /**< true -> log to syslog instead of file. */
-    size_t   log_max_file_size_bytes;               /**< File rotation threshold (0 disables rotation). */
-    int      log_max_rotated_files;                 /**< Number of rotated log files kept (>= 1). */
+    uint16_t listen_port;                                    /**< TCP port to listen on. */
+    char     document_root[SERVER_CONFIG_PATH_MAX];          /**< Document root directory. */
+    char     log_file_path[SERVER_CONFIG_PATH_MAX];          /**< File backend log path. */
+    bool     use_syslog_backend;                             /**< Use syslog instead of a file. */
+    size_t   log_max_file_size_bytes;                        /**< File rotation threshold. */
+    int      log_max_rotated_files;                          /**< Number of rotated files kept. */
+
+    bool     use_tls;                                        /**< Serve TLS on the listener. */
+    char     tls_certificate_path[SERVER_CONFIG_PATH_MAX];   /**< PEM server certificate path. */
+    char     tls_private_key_path[SERVER_CONFIG_PATH_MAX];   /**< PEM private key path. */
 } ServerConfig;
 
 /**

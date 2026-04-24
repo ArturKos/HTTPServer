@@ -40,7 +40,8 @@ static ssize_t write_all_bytes_to_fd(int target_fd, const void* buffer, size_t b
     return (ssize_t)buffer_size;
 }
 
-static int relay_child_output_to_client(int child_stdout_fd, int client_socket)
+static int relay_child_output_to_client(int child_stdout_fd,
+                                        ConnectionContext* connection)
 {
     char relay_buffer[8192];
     for (;;) {
@@ -50,7 +51,7 @@ static int relay_child_output_to_client(int child_stdout_fd, int client_socket)
             return -1;
         }
         if (bytes_read == 0) return 0;
-        if (response_write_body(client_socket, relay_buffer, (size_t)bytes_read) < 0) {
+        if (response_write_body(connection, relay_buffer, (size_t)bytes_read) < 0) {
             return -1;
         }
     }
@@ -113,7 +114,7 @@ static void build_php_cgi_environment(PhpEnvironment* environment,
     }
 }
 
-int php_handler_execute(int client_socket,
+int php_handler_execute(ConnectionContext* connection,
                         const HttpRequest* request,
                         const char* script_path,
                         const char* client_ip,
@@ -123,7 +124,7 @@ int php_handler_execute(int client_socket,
     int stdin_pipe_fds[2];
     int stdout_pipe_fds[2];
     if (pipe(stdin_pipe_fds) < 0 || pipe(stdout_pipe_fds) < 0) {
-        response_write_error(client_socket, HTTP_STATUS_INTERNAL_SERVER_ERROR);
+        response_write_error(connection, HTTP_STATUS_INTERNAL_SERVER_ERROR);
         return HTTP_STATUS_INTERNAL_SERVER_ERROR;
     }
 
@@ -137,7 +138,7 @@ int php_handler_execute(int client_socket,
         close(stdin_pipe_fds[1]);
         close(stdout_pipe_fds[0]);
         close(stdout_pipe_fds[1]);
-        response_write_error(client_socket, HTTP_STATUS_INTERNAL_SERVER_ERROR);
+        response_write_error(connection, HTTP_STATUS_INTERNAL_SERVER_ERROR);
         return HTTP_STATUS_INTERNAL_SERVER_ERROR;
     }
 
@@ -165,9 +166,9 @@ int php_handler_execute(int client_socket,
     int prelude_length = snprintf(response_prelude, sizeof(response_prelude),
                                   "HTTP/1.1 200 OK\r\nServer: %s\r\n",
                                   HTTP_SERVER_NAME);
-    response_write_body(client_socket, response_prelude, (size_t)prelude_length);
+    response_write_body(connection, response_prelude, (size_t)prelude_length);
 
-    relay_child_output_to_client(stdout_pipe_fds[0], client_socket);
+    relay_child_output_to_client(stdout_pipe_fds[0], connection);
     close(stdout_pipe_fds[0]);
 
     int child_exit_status = 0;

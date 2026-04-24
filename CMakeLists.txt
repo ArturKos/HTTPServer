@@ -18,6 +18,7 @@ endif()
 
 option(BUILD_TESTING      "Build unit tests"       ON)
 option(BUILD_DOCUMENTATION "Build Doxygen docs"    OFF)
+option(ENABLE_TLS          "Compile TLS support via OpenSSL" ON)
 
 set(HTTP_SERVER_COMPILE_OPTIONS
     -Wall
@@ -46,6 +47,8 @@ add_library(http_server_lib STATIC
     src/socket_utils.c
     src/request.c
     src/response.c
+    src/connection_io.c
+    src/tls_context.c
     src/file_handler.c
     src/cgi_handler.c
     src/php_handler.c
@@ -59,6 +62,14 @@ target_include_directories(http_server_lib
 
 target_compile_options(http_server_lib PRIVATE ${HTTP_SERVER_COMPILE_OPTIONS})
 target_link_libraries(http_server_lib PUBLIC Threads::Threads)
+
+if(ENABLE_TLS)
+    find_package(OpenSSL REQUIRED)
+    target_compile_definitions(http_server_lib PUBLIC HTTP_SERVER_TLS_ENABLED=1)
+    target_link_libraries(http_server_lib PUBLIC OpenSSL::SSL OpenSSL::Crypto)
+else()
+    target_compile_definitions(http_server_lib PUBLIC HTTP_SERVER_TLS_ENABLED=0)
+endif()
 
 add_executable(httpserver src/main.c)
 target_link_libraries(httpserver PRIVATE http_server_lib)
