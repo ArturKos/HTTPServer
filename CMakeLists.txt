@@ -49,6 +49,7 @@ add_library(http_server_lib STATIC
     src/response.c
     src/connection_io.c
     src/tls_context.c
+    src/config_loader.c
     src/file_handler.c
     src/cgi_handler.c
     src/php_handler.c

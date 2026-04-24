@@ -21,6 +21,7 @@ add_executable(http_server_tests
     test_thread_pool.cpp
     test_range_utils.cpp
     test_logger.cpp
+    test_config_loader.cpp
 )
 
 target_link_libraries(http_server_tests
