@@ -10,12 +10,12 @@
 
 int create_listening_socket(uint16_t listen_port, int backlog)
 {
-    int server_socket_fd = socket(AF_INET, SOCK_STREAM, 0);
+    int server_socket_fd = socket(AF_INET6, SOCK_STREAM, 0);
     if (server_socket_fd < 0) {
         return -1;
     }
 
-    int reuse_address_flag = 1;
+    const int reuse_address_flag = 1;
     if (setsockopt(server_socket_fd, SOL_SOCKET, SO_REUSEADDR,
                    &reuse_address_flag, sizeof(reuse_address_flag)) < 0) {
         const int saved_errno = errno;
@@ -24,11 +24,16 @@ int create_listening_socket(uint16_t listen_port, int backlog)
         return -1;
     }
 
-    struct sockaddr_in server_address;
+    /* Disable IPV6_V6ONLY so the same socket accepts IPv4-mapped clients. */
+    const int dual_stack_flag = 0;
+    setsockopt(server_socket_fd, IPPROTO_IPV6, IPV6_V6ONLY,
+               &dual_stack_flag, sizeof(dual_stack_flag));
+
+    struct sockaddr_in6 server_address;
     memset(&server_address, 0, sizeof(server_address));
-    server_address.sin_family      = AF_INET;
-    server_address.sin_addr.s_addr = htonl(INADDR_ANY);
-    server_address.sin_port        = htons(listen_port);
+    server_address.sin6_family = AF_INET6;
+    server_address.sin6_addr   = in6addr_any;
+    server_address.sin6_port   = htons(listen_port);
 
     if (bind(server_socket_fd, (struct sockaddr*)&server_address, sizeof(server_address)) < 0) {
         const int saved_errno = errno;

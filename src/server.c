@@ -42,11 +42,29 @@ static volatile sig_atomic_t g_shutdown_requested = 0;
 static int                   g_shutdown_eventfd   = -1;
 
 typedef struct ConnectionTask {
-    int                 client_socket;
-    struct sockaddr_in  client_address;
-    const ServerConfig* server_config;
-    TlsContext*         tls_context;
+    int                     client_socket;
+    struct sockaddr_storage client_address;
+    socklen_t               client_address_length;
+    const ServerConfig*     server_config;
+    TlsContext*             tls_context;
 } ConnectionTask;
+
+static void format_client_ip(const struct sockaddr_storage* client_address,
+                             char* ip_buffer,
+                             size_t ip_buffer_size)
+{
+    if (client_address->ss_family == AF_INET6) {
+        const struct sockaddr_in6* address_v6 =
+            (const struct sockaddr_in6*)client_address;
+        inet_ntop(AF_INET6, &address_v6->sin6_addr, ip_buffer, (socklen_t)ip_buffer_size);
+    } else if (client_address->ss_family == AF_INET) {
+        const struct sockaddr_in* address_v4 =
+            (const struct sockaddr_in*)client_address;
+        inet_ntop(AF_INET, &address_v4->sin_addr, ip_buffer, (socklen_t)ip_buffer_size);
+    } else {
+        snprintf(ip_buffer, ip_buffer_size, "unknown");
+    }
+}
 
 static void handle_shutdown_signal(int signal_number)
 {
@@ -123,11 +141,11 @@ static void configure_client_socket_timeout(int client_socket)
 }
 
 static void handle_client_connection(ConnectionContext* connection,
-                                     const struct sockaddr_in* client_address,
+                                     const struct sockaddr_storage* client_address,
                                      const ServerConfig* config)
 {
-    char client_ip_string[INET_ADDRSTRLEN] = "0.0.0.0";
-    inet_ntop(AF_INET, &client_address->sin_addr, client_ip_string, sizeof(client_ip_string));
+    char client_ip_string[INET6_ADDRSTRLEN] = "unknown";
+    format_client_ip(client_address, client_ip_string, sizeof(client_ip_string));
 
     int requests_served_on_connection = 0;
     bool should_keep_connection_alive = true;
@@ -204,7 +222,7 @@ static bool accept_pending_connections(int listening_socket,
                                        ThreadPool* worker_pool)
 {
     for (;;) {
-        struct sockaddr_in client_address;
+        struct sockaddr_storage client_address;
         socklen_t client_address_length = sizeof(client_address);
         int client_socket = accept4(listening_socket,
                                     (struct sockaddr*)&client_address,
@@ -221,10 +239,11 @@ static bool accept_pending_connections(int listening_socket,
             close(client_socket);
             continue;
         }
-        connection_task->client_socket  = client_socket;
-        connection_task->client_address = client_address;
-        connection_task->server_config  = server_config;
-        connection_task->tls_context    = tls_context;
+        connection_task->client_socket         = client_socket;
+        connection_task->client_address        = client_address;
+        connection_task->client_address_length = client_address_length;
+        connection_task->server_config         = server_config;
+        connection_task->tls_context           = tls_context;
 
         if (!thread_pool_submit_task(worker_pool, connection_task_runner, connection_task)) {
             close(client_socket);
