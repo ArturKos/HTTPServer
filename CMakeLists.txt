@@ -19,6 +19,12 @@ endif()
 option(BUILD_TESTING      "Build unit tests"       ON)
 option(BUILD_DOCUMENTATION "Build Doxygen docs"    OFF)
 option(ENABLE_TLS          "Compile TLS support via OpenSSL" ON)
+option(ENABLE_SANITIZERS   "Build with AddressSanitizer + UndefinedBehaviorSanitizer" OFF)
+
+if(ENABLE_SANITIZERS)
+    add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer -g)
+    add_link_options(-fsanitize=address,undefined)
+endif()
 
 set(HTTP_SERVER_COMPILE_OPTIONS
     -Wall
