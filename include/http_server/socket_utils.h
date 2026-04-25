@@ -34,6 +34,19 @@ int create_listening_socket(uint16_t listen_port, int backlog);
  */
 bool parse_tcp_port(const char* port_string, uint16_t* out_port);
 
+/**
+ * @brief Attempt to inherit a listening socket from systemd socket activation.
+ *
+ * Reads the LISTEN_PID and LISTEN_FDS environment variables according to the
+ * sd_listen_fds(3) protocol. When the values are present, point to the current
+ * process and announce at least one fd, the function returns the first inherited
+ * descriptor (file descriptor 3 by convention). On any mismatch -1 is returned
+ * and the caller should fall back to @ref create_listening_socket.
+ *
+ * @return Inherited file descriptor on success, -1 otherwise.
+ */
+int try_take_systemd_listening_socket(void);
+
 #ifdef __cplusplus
 }
 #endif

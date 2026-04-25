@@ -272,8 +272,12 @@ int server_run(const ServerConfig* server_config)
         }
     }
 
-    int listening_socket = create_listening_socket(server_config->listen_port,
+    int listening_socket = try_take_systemd_listening_socket();
+    bool listening_socket_was_inherited = (listening_socket >= 0);
+    if (listening_socket < 0) {
+        listening_socket = create_listening_socket(server_config->listen_port,
                                                    CONNECTION_BACKLOG);
+    }
     if (listening_socket < 0) {
         fprintf(stderr, "Failed to create listening socket on port %u: %s\n",
                 server_config->listen_port, strerror(errno));
@@ -331,9 +335,10 @@ int server_run(const ServerConfig* server_config)
     }
 
     fprintf(stdout,
-            "Server listening on port %u (%s), document root: %s, workers: %d\n",
+            "Server listening on port %u (%s, %s socket), document root: %s, workers: %d\n",
             server_config->listen_port,
             server_config->use_tls ? "TLS" : "plain",
+            listening_socket_was_inherited ? "systemd-inherited" : "self-bound",
             server_config->document_root,
             DEFAULT_WORKER_THREAD_COUNT);
 

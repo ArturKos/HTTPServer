@@ -1,0 +1,11 @@
+[Unit]
+Description=HTTPServer listening socket
+
+[Socket]
+ListenStream=8080
+NoDelay=true
+ReusePort=true
+Backlog=512
+
+[Install]
+WantedBy=sockets.target

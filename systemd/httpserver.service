@@ -1,0 +1,31 @@
+[Unit]
+Description=HTTPServer
+After=network.target
+Requires=httpserver.socket
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/httpserver --config /etc/httpserver/httpserver.ini
+Restart=on-failure
+RestartSec=2
+
+# When httpserver.socket is active, systemd hands fd 3 to the service.
+# The server detects this via LISTEN_PID/LISTEN_FDS and reuses the socket.
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+ReadWritePaths=/var/log/httpserver
+
+[Install]
+WantedBy=multi-user.target
