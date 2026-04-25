@@ -35,3 +35,5 @@ target_compile_options(http_server_tests PRIVATE
 )
 
 gtest_discover_tests(http_server_tests)
+
+add_subdirectory(integration)
